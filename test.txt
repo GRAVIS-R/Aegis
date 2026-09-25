@@ -1,0 +1,349 @@
+/**
+ * Хранилище справочника "Ответственные"
+ *
+ * Единица справочника — один пользователь (не группа), которому назначены:
+ *  - один или несколько типов ответственности (из таблицы responsible_types),
+ *  - произвольный набор групп поддержки,
+ *  - произвольный набор классификаций.
+ *
+ * ВАЖНО про идентификаторы (контракт бэкенда):
+ *  - запись справочника адресуется НЕ по своему id, а по user_id
+ *    (один пользователь = одна запись). Поэтому /update принимает user_id,
+ *    а /destroy — массив user_id в ключе `users`.
+ *  - типы приходят и отправляются как ID из responsible_types (не слаги).
+ *
+ * Структура повторяет паттерн support.groups.store.js / classifications.store.js
+ * (кэш, пагинация, CRUD через globalApiClient) — сознательно не изобретаем новый
+ * подход ради единообразия и переиспользования уже проверенной логики кэширования.
+ */
+
+import { defineStore } from 'pinia'
+import { useCache } from '@/utils/cashe.utils'
+import globalApiClient from '@/api/axios.config'
+
+/**
+ * Резервный список типов на случай, если /load_types недоступен (сетевая ошибка/404/500).
+ * ВАЖНО: это только подсказка для UI. Валидность типов всё равно проверяет бэкенд
+ * (exists:responsible_types,id), поэтому фолбэк не является дырой в безопасности —
+ * максимум пользователь увидит чекбоксы и получит ошибку валидации при сохранении.
+ * Если сервер ОТВЕТИЛ — используем только его данные, фолбэк не применяется.
+ */
+const FALLBACK_TYPES = [
+  { id: 1, name: 'Наблюдатель' },
+  { id: 2, name: 'Согласующий' }
+]
+
+/**
+ * Единая проверка ответа бэкенда на ошибку.
+ * Бэкенд/сеть отдают ошибки несколькими способами:
+ *   - not_enough_rights: строка (Gate::allows провалился)
+ *   - validator_fails + errors: ошибки валидации
+ *   - message/exception: серверное исключение Laravel (500)
+ *   - строка HTML: Laravel вернул страницу ошибки (например, ArgumentCountError)
+ * Возвращает текст ошибки либо null, если ответ успешный.
+ *
+ * Экспортируется отдельно, чтобы страница и модалка использовали одну логику.
+ */
+export const getResponseError = (response) => {
+  if (!response) return 'Пустой ответ от сервера'
+
+  // Laravel отдал HTML-страницу ошибки (не JSON) — тело придёт строкой
+  if (typeof response === 'string') return 'Ошибка сервера'
+
+  if (typeof response !== 'object') return 'Некорректный ответ сервера'
+
+  // Недостаток прав доступа
+  if (response.not_enough_rights) return response.not_enough_rights
+
+  // Серверное исключение Laravel (500): { message, exception, file, line, trace }
+  if (response.exception || response.message) {
+    return response.message || 'Ошибка сервера'
+  }
+
+  // Ошибки валидации
+  if (response.validator_fails || response.errors) {
+    const errors = response.errors || response.validator_fails || {}
+    if (typeof errors === 'object' && Object.keys(errors).length > 0) {
+      return Object.values(errors).flat()[0]
+    }
+    return 'Ошибка валидации данных'
+  }
+
+  return null
+}
+
+export const useResponsiblesStore = defineStore('responsibles', {
+  state: () => ({
+    responsibles: [],     // записи текущей страницы
+    types: [],            // справочник типов (загружается один раз)
+    loading: false,       // индикатор загрузки списка
+    pagination: null,     // пагинация в едином формате проекта
+    cacheInstance: null,  // ленивый кэш
+    lastParams: null      // последние параметры запроса
+  }),
+
+  actions: {
+    /**
+     * Ленивая инициализация кэш-инстанса (5 минут TTL — как у остальных справочников).
+     */
+    initCache() {
+      if (!this.cacheInstance) {
+        const {
+          getCacheKey,
+          isCacheValid,
+          getFromCache,
+          saveToCache,
+          invalidateCacheKey,
+          clearCache,
+          cache
+        } = useCache(5 * 60 * 1000)
+
+        this.cacheInstance = {
+          getCacheKey,
+          isCacheValid,
+          getFromCache,
+          saveToCache,
+          invalidateCacheKey,
+          clearCache,
+          cache
+        }
+      }
+      return this.cacheInstance
+    },
+
+    /**
+     * Загрузка типов ответственных (responsible_types).
+     * Эндпоинт отдаёт голый массив без пагинации.
+     * Результат кэшируется в state.types — справочник из двух строк,
+     * повторно дёргать сервер на каждое открытие модалки незачем.
+     */
+    async loadTypes() {
+      // Если уже загружены — отдаём из памяти
+      if (this.types.length > 0) return this.types
+
+      try {
+        const response = await globalApiClient.post('/responsibles/load_types', {})
+        console.log('📥 Типы ответственных:', response.data)
+
+        // Сервер ответил — доверяем только ему, фолбэк не применяем
+        if (Array.isArray(response.data)) {
+          this.types = response.data
+        } else {
+          this.types = []
+          console.warn('⚠️ Неожиданный формат ответа /load_types:', response.data)
+        }
+        return this.types
+      } catch (error) {
+        // Фолбэк только при недоступности эндпоинта (сеть/404/500)
+        console.error('❌ /load_types недоступен, используем резервный список типов:', error)
+        this.types = [...FALLBACK_TYPES]
+        return this.types
+      }
+    },
+
+    /**
+     * Загрузка пользователей, ещё НЕ являющихся ответственными.
+     * Бэкенд сам исключает уже добавленных, поэтому уникальность
+     * "один юзер = одна запись" обеспечена на уровне списка.
+     *
+     * @param {string} searchStr - поиск по ФИО (ключ user_search)
+     * @param {string|null} url - URL страницы пагинации комбобокса
+     * @returns {Promise<Object>} формат, совместимый с UIComboBox (load-options)
+     */
+    async loadAvailableUsers(searchStr, url = null) {
+      try {
+        let response
+        if (url) {
+          response = await globalApiClient.post(url, { user_search: searchStr || '' })
+        } else {
+          response = await globalApiClient.post('/responsibles/load_users', { user_search: searchStr || '' })
+        }
+
+        // Приводим к формату комбобокса { id, name, ... }
+        return {
+          ...response.data,
+          data: (response.data?.data || []).map(user => ({
+            id: user.id,
+            name: `${user.last_name || ''} ${user.first_name || ''} ${user.middle_name || ''}`.trim() || user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            middle_name: user.middle_name,
+            email: user.email
+          }))
+        }
+      } catch (error) {
+        console.error('❌ Ошибка загрузки доступных пользователей:', error)
+        return {
+          data: [],
+          current_page: 1,
+          last_page: 1,
+          next_page_url: null,
+          prev_page_url: null,
+          links: []
+        }
+      }
+    },
+
+    /**
+     * Загрузка списка записей справочника с поиском/пагинацией.
+     * Поиск на бэкенде идёт по ФИО связанного пользователя (ключ responsible_search).
+     *
+     * @param {Object} params - { search, url }
+     */
+    async fetchResponsibles(params = {}) {
+      this.loading = true
+
+      console.log('Параметры загрузки справочника ответственных: ', params)
+
+      const cache = this.initCache()
+      const cacheKey = this.generateCacheKey(params)
+
+      if (cache.isCacheValid(cacheKey)) {
+        console.log('📦 Используем кэшированные данные для ключа: ', cacheKey)
+        const cached = cache.getFromCache(cacheKey)
+
+        this.responsibles = cached.data.data || []
+        this.pagination = cached.pagination
+
+        this.loading = false
+        return cached.response
+      }
+
+      try {
+        const requestBody = {
+          responsible_search: params.search || ''
+        }
+
+        const route = params.url || '/responsibles/load_responsibles'
+
+        console.log('📤 Отправка запроса: ', route, ' ', requestBody)
+        const response = await globalApiClient.post(route, requestBody)
+        console.log('📥 Ответ от сервера:', response)
+
+        if (response.data) {
+          this.responsibles = response.data.data || []
+
+          this.pagination = {
+            current_page: response.data.current_page,
+            data: response.data.data,
+            first_page_url: response.data.first_page_url,
+            from: response.data.from,
+            last_page: response.data.last_page,
+            last_page_url: response.data.last_page_url,
+            links: response.data.links,
+            next_page_url: response.data.next_page_url,
+            path: response.data.path,
+            per_page: response.data.per_page,
+            prev_page_url: response.data.prev_page_url,
+            to: response.data.to,
+            total: response.data.total
+          }
+
+          cache.saveToCache(cacheKey, response.data, this.pagination, response)
+          this.lastParams = { ...params }
+        }
+        return response
+      } catch (error) {
+        console.error('❌ Ошибка загрузки справочника ответственных:', error)
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    /**
+     * Создание записи справочника.
+     * payload: { user_id, types: [id], classifications: [id], support_groups: [id] }
+     *
+     * При ошибке возвращает тело ответа сервера (для разбора в модалке через
+     * getResponseError). Если ответа нет вовсе (сеть) — синтезируем объект-ошибку,
+     * чтобы вызывающий код не принял отказ за успех.
+     */
+    async createResponsible(payload) {
+      try {
+        console.log('📤 Создание ответственного:', payload)
+        const response = await globalApiClient.post('/responsibles/store', payload)
+        console.log('📥 Ответ от сервера при создании:', response)
+
+        this.clearCache()
+        return response.data
+      } catch (err) {
+        console.error('❌ Ошибка при создании ответственного:', err)
+        if (err.response?.data) {
+          return err.response.data
+        }
+        // Нет тела ответа (сеть/таймаут) — возвращаем распознаваемую ошибку
+        return { message: err?.message || 'Ошибка сети при создании записи' }
+      }
+    },
+
+    /**
+     * Обновление записи справочника.
+     * Запись адресуется по user_id (отдельного responsible_id в контракте нет).
+     * payload: { user_id, types: [id], classifications: [id], support_groups: [id] }
+     */
+    async updateResponsible(payload) {
+      try {
+        console.log('📤 Обновление ответственного:', payload)
+        const response = await globalApiClient.post('/responsibles/update', payload)
+        console.log('📥 Ответ от сервера при обновлении:', response)
+
+        this.clearCache()
+        return response.data
+      } catch (err) {
+        console.error('❌ Ошибка при обновлении ответственного:', err)
+        if (err.response?.data) {
+          return err.response.data
+        }
+        return { message: err?.message || 'Ошибка сети при обновлении записи' }
+      }
+    },
+
+    /**
+     * Удаление записей справочника.
+     * ВНИМАНИЕ: бэкенд принимает массив ID ПОЛЬЗОВАТЕЛЕЙ (не id записей).
+     * @param {Object} payload - { users: [user_id, ...] }
+     */
+    async deleteResponsibles(payload) {
+      try {
+        console.log('🗑️ Удаляем ответственных (по user_id):', payload)
+        const response = await globalApiClient.post('/responsibles/destroy', payload)
+        console.log('📥 Ответ от сервера при удалении:', response)
+
+        this.clearCache()
+        return response.data
+      } catch (err) {
+        console.error('❌ Ошибка при удалении ответственных:', err)
+        if (err.response?.data) {
+          return err.response.data
+        }
+        return { message: err?.message || 'Ошибка сети при удалении записи' }
+      }
+    },
+
+    /**
+     * Генерация ключа кэша на основе параметров поиска/страницы.
+     */
+    generateCacheKey(params) {
+      const search = params.search || ''
+      let page = 1
+      if (params.url) {
+        const pageParam = params.url.split('?')[1]
+        page = pageParam ? pageParam.split('=')[1] : 1
+      }
+      return `responsibles_search_${search}_page_${page}`
+    },
+
+    invalidateCacheKey(params) {
+      const cache = this.initCache()
+      const cacheKey = this.generateCacheKey(params)
+      cache.invalidateCacheKey(cacheKey)
+    },
+
+    clearCache() {
+      const cache = this.initCache()
+      cache.clearCache()
+      this.lastParams = null
+    }
+  }
+})
