@@ -1,0 +1,206 @@
+/* ── Глобальная база ──────────────────────────────── */
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: var(--pad-lg);
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 500;
+  margin: 0 0 var(--pad-md);
+  letter-spacing: 0.5px;
+}
+
+h2 {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: var(--pad-lg) 0 var(--pad-md);
+}
+
+/* ── Кнопка со срезом ─────────────────────────────── */
+button {
+  padding: 10px 22px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 100%, 12px 100%);
+  transition: box-shadow 0.2s ease, background 0.2s ease;
+}
+
+button:hover:not(:disabled) {
+  box-shadow: 0 0 20px var(--glow);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Путь к папке ─────────────────────────────────── */
+.folder-path {
+  margin-top: var(--pad-md);
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: "Consolas", monospace;
+  word-break: break-all;
+}
+
+/* ── Ошибка ───────────────────────────────────────── */
+.error {
+  margin-top: var(--pad-md);
+  padding: 10px var(--pad-md);
+  color: #ff6b8a;
+  border-left: 3px solid #ff6b8a;
+  background: rgba(255, 107, 138, 0.06);
+  font-size: 13px;
+}
+
+/* ── Список профилей ──────────────────────────────── */
+.profiles {
+  margin-top: var(--pad-lg);
+}
+
+/* ── Карточка профиля со срезом угла + glow ──────────── */
+.profile-card {
+  position: relative;
+  background: var(--surface);
+  padding: var(--pad-md) 18px;
+  margin-bottom: var(--gap);
+  border: 1px solid var(--border-accent);
+  /* Срез верхне-правого угла под 45° */
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% 100%,
+    0 100%
+  );
+  transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.profile-card:hover {
+  background: var(--surface-hover);
+  box-shadow: 0 0 20px var(--glow);
+  border-color: var(--accent);
+}
+
+/* Акцентная полоса слева */
+.profile-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  background: var(--accent-dim);
+  transition: background 0.2s ease;
+}
+
+.profile-card:hover::before {
+  background: var(--accent);
+}
+
+.profile-card h3 {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0 0 6px;
+  word-break: break-all;
+}
+
+.block-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: "Consolas", monospace;
+  margin: 0;
+}
+
+/* ── Активная карточка ────────────────────────────── */
+.profile-card.active {
+  background: var(--surface-hover);
+  box-shadow: 0 0 20px var(--glow);
+  border-color: var(--accent);
+}
+
+.profile-card.active::before {
+  background: var(--accent);
+}
+
+/* ── Панель парсинга ──────────────────────────────── */
+.parse-panel {
+  margin: -6px 0 var(--gap) 0;
+  padding: var(--pad-md);
+  background: #0F0F16;
+  border: 1px solid var(--border-accent);
+  border-top: none;
+}
+
+.parse-status {
+  color: var(--accent);
+  font-family: "Consolas", monospace;
+  font-size: 13px;
+  margin: 0;
+}
+
+.parse-section {
+  margin-bottom: var(--pad-md);
+}
+
+.parse-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+
+.parse-args {
+  margin: 0;
+  padding: 10px;
+  background: var(--bg);
+  border-left: 2px solid var(--accent);
+  font-family: "Consolas", monospace;
+  font-size: 11px;
+  color: #C8C8D8;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.parse-log {
+  margin-top: var(--pad-md);
+  font-family: "Consolas", monospace;
+  font-size: 12px;
+}
+
+.parse-log summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.parse-log ol {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--text-dim);
+}
+
+.parse-log li {
+  margin-bottom: 3px;
+  word-break: break-all;
+}
